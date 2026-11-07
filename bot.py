@@ -41,28 +41,42 @@ def init_db():
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS themes (
         id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
-        body TEXT DEFAULT '', published INTEGER DEFAULT 0, created_at TEXT NOT NULL
+        body TEXT DEFAULT '', created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending', receipt_type TEXT,
-        receipt_file_id TEXT, receipt_text TEXT, created_at TEXT NOT NULL,
-        reviewed_at TEXT
+        receipt_file_id TEXT, created_at TEXT NOT NULL, reviewed_at TEXT
     );
     CREATE TABLE IF NOT EXISTS subscriptions (
         user_id INTEGER PRIMARY KEY, expires_at TEXT NOT NULL, kicked INTEGER DEFAULT 0
     );
-    CREATE TABLE IF NOT EXISTS tip_claims (
-        user_id INTEGER PRIMARY KEY, last_claimed_at TEXT NOT NULL
-    );
     """)
+    
+    # Добавим стартовые темы, если база пустая (как на вашем скриншоте)
+    count = db.execute("SELECT COUNT(*) n FROM themes").fetchone()["n"]
+    if count == 0:
+        initial_themes = [
+            ("Что такое FunPay: знакомство с площадкой", "FunPay — это крупнейшая биржа игровых ценностей, где игроки напрямую торгуют друг с другом аккаунтами, валютой и услугами."),
+            ("Что такое Playerok: обзор площадки для торговли", "Playerok — популярная платформа для быстрой продажи игровых аккаунтов и цифровых товаров с удобным интерфейсом."),
+            ("Как безопасно начать продавать цифровые товары", "Всегда сохраняйте переписку, видеозаписи передачи данных и никогда не соглашайтесь на сомнительные сделки вне гаранта."),
+            ("Как выбрать нишу для первого товара", "Изучите спрос, найдите игры с высоким суточным онлайн-рынком и минимальным порогом входа для новичков."),
+            ("Как изучить спрос перед созданием товара", "Проанализируйте топ продавцов, посмотрите категории с наибольшим количеством отзывов и активных сделок."),
+            ("Как анализировать конкурентов на маркетплейсе", "Обращайте внимание на цены, скорость ответа продавца и количество успешно закрытых заказов."),
+            ("Как оформить профиль продавца", "Поставьте понятную аватарку, напишите вежливое описание и укажите график работы для повышения доверия покупателей."),
+            ("Как придумать понятное название товара", "Название должно четко отражать суть: игра, сервер, регион и объем (например: [Россия] Робуксы 100 R$)."),
+            ("Как написать честное и понятное описание", "Опишите пошагово процесс получения товара, сроки выполнения и возможные нюансы.")
+        ]
+        for t, b in initial_themes:
+            db.execute("INSERT INTO themes(title, body, created_at) VALUES(?,?,?)", (t, b, datetime.now().isoformat()))
+        db.commit()
+
     defaults = {
         "price": "99",
         "card_number": "2200702075574801",
         "bank_name": "Т-Банк (Тинькофф)",
         "channel_url": "https://t.me/telegram",
-        "ads_url": "https://t.me/telegram",
-        "description": "💸 Способы заработка\n⭐ Способы фарма отзывов\n🥈 Приватные Гайды\n📚 Разное (софт и фишки)"
+        "ads_url": "https://t.me/telegram"
     }
     for k, v in defaults.items():
         db.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)", (k, v))
@@ -82,48 +96,42 @@ def is_admin(user_id):
     return user_id in ADMIN_IDS
 
 class AdminStates(StatesGroup):
-    waiting_for_theme = State()
+    waiting_for_theme_title = State()
+    waiting_for_theme_body = State()
     waiting_for_price = State()
     waiting_for_card = State()
     waiting_for_broadcast = State()
+
+# Временное хранилище для пошагового создания темы админом
+temp_theme_data = {}
 
 def main_menu_kb(is_adm=False):
     kb = [
         [InlineKeyboardButton(text="📢 Наш канал", url=get_setting("channel_url", "https://t.me/telegram"))],
         [InlineKeyboardButton(text="💎 Реклама", url=get_setting("ads_url", "https://t.me/telegram"))],
-        [InlineKeyboardButton(text="🛒 Что в ПРИВАТЕ?", callback_data="menu_privat")],
-        [InlineKeyboardButton(text="💡 Идея по заработку (24ч)", callback_data="get_daily_tip")],
-        [InlineKeyboardButton(text="🔐 Купить доступ", callback_data="menu_buy")]
+        [InlineKeyboardButton(text="📚 Темы и гайды", callback_data="menu_themes")],
+        [InlineKeyboardButton(text="🔐 Купить доступ (99₽)", callback_data="menu_buy")]
     ]
     if is_adm:
         kb.append([InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-def privat_menu_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 Roblox", callback_data="game_roblox"),
-         InlineKeyboardButton(text="⚡ Standoff 2", callback_data="game_standoff")],
-        [InlineKeyboardButton(text="🌵 Brawl Stars", callback_data="game_brawl"),
-         InlineKeyboardButton(text="🔫 PUBG Mobile", callback_data="game_pubg")],
-        [InlineKeyboardButton(text="🏰 Clash of Clans", callback_data="game_clash")],
-        [InlineKeyboardButton(text="📦 Разное (софт и фишки)", callback_data="game_misc")],
-        [InlineKeyboardButton(text="📜 Инструкция по безопасности", callback_data="game_safety")],
-        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
-    ])
-
-def buy_menu_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
-    ])
+def themes_menu_kb(themes):
+    kb = []
+    for idx, t in enumerate(themes, 1):
+        kb.append([InlineKeyboardButton(text=f"📌 {idx}. {t['title'][:35]}...", callback_data=f"show_theme:{t['id']}")])
+    kb.append([InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def admin_panel_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="adm_stats"),
          InlineKeyboardButton(text="📦 Заявки", callback_data="adm_orders")],
-        [InlineKeyboardButton(text="➕ Добавить тему/идею", callback_data="adm_add_theme"),
-         InlineKeyboardButton(text="📢 Рассылка", callback_data="adm_broadcast")],
+        [InlineKeyboardButton(text="➕ Добавить тему", callback_data="adm_add_theme"),
+         InlineKeyboardButton(text="🗑 Удалить темы", callback_data="adm_del_themes")],
         [InlineKeyboardButton(text="💰 Изменить цену", callback_data="adm_set_price"),
          InlineKeyboardButton(text="💳 Изменить реквизиты", callback_data="adm_set_card")],
+        [InlineKeyboardButton(text="📢 Рассылка", callback_data="adm_broadcast")],
         [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="main_menu")]
     ])
 
@@ -140,8 +148,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
     text = (
         f"⚡ <b>PlayFunpay Team | Официальный бот проекта</b>\n\n"
-        f"Привет, <b>{message.from_user.first_name}</b>! Ты в команде. "
-        f"Используй кнопки ниже, чтобы зарабатывать деньги и развивать свои проекты. 👇"
+        f"Привет, <b>{message.from_user.first_name}</b>! Используй кнопки ниже, чтобы изучать материалы и зарабатывать. 👇"
     )
     await message.answer(text, reply_markup=main_menu_kb(is_admin(uid)))
 
@@ -149,45 +156,43 @@ async def cmd_start(message: Message, state: FSMContext):
 async def cb_main_menu(call: CallbackQuery, state: FSMContext):
     await state.clear()
     uid = call.from_user.id
-    text = f"⚡ <b>PlayFunpay Team | Официальный бот проекта</b>\n\nВыбери нужный раздел в меню ниже: 👇"
+    text = "⚡ <b>PlayFunpay Team | Официальный бот проекта</b>\n\nВыбери нужный раздел в меню ниже: 👇"
     try:
         await call.message.edit_text(text, reply_markup=main_menu_kb(is_admin(uid)))
     except Exception:
         await call.message.answer(text, reply_markup=main_menu_kb(is_admin(uid)))
     await call.answer()
 
-@dp.callback_query(F.data == "menu_privat")
-async def cb_menu_privat(call: CallbackQuery):
-    desc = get_setting("description", "🛒 Что входит в ПРИВАТ:\n\n💸 Способы заработка\n⭐ Способы фарма отзывов\n🥈 Приватные Гайды\n📚 Разное (софт и фишки)")
-    text = f"🛒 <b>Что входит в ПРИВАТ:</b>\n\n{desc}\n\n<b>Выбери категорию, чтобы узнать подробнее:</b>"
-    await call.message.edit_text(text, reply_markup=privat_menu_kb())
+@dp.callback_query(F.data == "menu_themes")
+async def cb_menu_themes(call: CallbackQuery):
+    themes = db.execute("SELECT id, title FROM themes ORDER BY id ASC").fetchall()
+    if not themes:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]])
+        return await call.message.edit_text("📚 <b>Темы и гайды</b>\n\nПока материалы не добавлены.", reply_markup=kb)
+    
+    text = "📚 <b>Темы и гайды</b>\n\nВыбери тему. Здесь собраны материалы PlayFunpay:"
+    await call.message.edit_text(text, reply_markup=themes_menu_kb(themes))
     await call.answer()
 
-CATEGORY_CONTENT = {
-    "game_roblox": ("🤖 Roblox", "В этом разделе собраны лучшие схемы заработка и продажи активов в Roblox (донат, робуксы, перепродажа аккаунтов)."),
-    "game_standoff": ("⚡ Standoff 2", "Гайды по фарму голды, перепродаже скинов на рынке и безопасности сделок в Standoff 2."),
-    "game_brawl": ("🌵 Brawl Stars", "Способы поднятия аккаунтов, продажа прокачанных профилей и аренда бойцов."),
-    "game_pubg": ("🔫 PUBG Mobile", "Схемы фарма UC, продажа редких скинов и прокачка рангов в PUBG Mobile."),
-    "game_clash": ("🏰 Clash of Clans", "Продажа и раскачка деревень Clash of Clans, безопасные сделки."),
-    "game_misc": ("📦 Разное (софт и фишки)", "Полезный софт, скрипты автоматизации, прокси и секретные фишки для продавцов."),
-    "game_safety": ("📜 Инструкция по безопасности", "Как не попасться на мошенников, правильно принимать оплату и защитить свои аккаунты.")
-}
-
-@dp.callback_query(F.data.in_(CATEGORY_CONTENT.keys()))
-async def cb_category(call: CallbackQuery):
-    title, desc = CATEGORY_CONTENT[call.data]
+@dp.callback_query(F.data.startswith("show_theme:"))
+async def cb_show_theme(call: CallbackQuery):
+    theme_id = int(call.data.split(":")[1])
+    theme = db.execute("SELECT * FROM themes WHERE id=?", (theme_id,)).fetchone()
+    
     uid = call.from_user.id
     sub = db.execute("SELECT expires_at FROM subscriptions WHERE user_id=? AND expires_at>?", (uid, datetime.now().isoformat())).fetchone()
     
-    content_text = f"📂 <b>{title}</b>\n\n{desc}\n\n"
-    if sub or is_admin(uid):
-        content_text += "🟢 <b>Доступ открыт!</b> Тебе доступны все материалы этого раздела."
-    else:
-        price = get_setting("price", "99")
-        content_text += f"🔒 <b>Материал заблокирован.</b> Для доступа ко всем приватным материалам приобрети подписку всего за <b>{price}₽</b>."
+    if not theme:
+        return await call.answer("Тема не найдена.", show_alert=True)
+        
+    text = f"📌 <b>{theme['title']}</b>\n\n{theme['body']}"
     
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад к категориям", callback_data="menu_privat")]])
-    await call.message.edit_text(content_text, reply_markup=kb)
+    if not sub and not is_admin(uid):
+        price = get_setting("price", "99")
+        text += f"\n\n🔒 <i>Полный доступ к приватным материалам закрыт. Приобрети подписку всего за {price}₽.</i>"
+        
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ К списку тем", callback_data="menu_themes")]])
+    await call.message.edit_text(text, reply_markup=kb)
     await call.answer()
 
 @dp.callback_query(F.data == "menu_buy")
@@ -202,39 +207,13 @@ async def cb_menu_buy(call: CallbackQuery):
         f"💰 <b>Сумма:</b> <b>{price} рублей</b>\n"
         f"🏛 <b>Банк:</b> {bank}\n\n"
         f"⚠️ <b>ВНИМАНИЕ:</b> После оплаты отправьте скриншот чека сюда в чат.\n\n"
-        f"Администратор проверит чек и выдаст доступ."
+        f"Администратор проверит его и выдаст доступ."
     )
-    await call.message.edit_text(text, reply_markup=buy_menu_kb())
-    await call.answer()
-
-@dp.callback_query(F.data == "get_daily_tip")
-async def cb_get_daily_tip(call: CallbackQuery):
-    uid = call.from_user.id
-    now = datetime.now()
-    
-    claim = db.execute("SELECT last_claimed_at FROM tip_claims WHERE user_id=?", (uid,)).fetchone()
-    if claim:
-        last_time = datetime.fromisoformat(claim["last_claimed_at"])
-        diff = now - last_time
-        if diff < timedelta(hours=24):
-            remaining = timedelta(hours=24) - diff
-            hours, remainder = divmod(int(remaining.total_seconds()), 3600)
-            minutes = remainder // 60
-            return await call.answer(f"⏳ Следующая идея будет доступна через {hours} ч. {minutes} мин.!", show_alert=True)
-            
-    themes = db.execute("SELECT * FROM themes ORDER BY RANDOM() LIMIT 1").fetchone()
-    if not themes:
-        return await call.answer("📭 В базе пока нет тем. Администратор скоро их добавит!", show_alert=True)
-        
-    db.execute("INSERT INTO tip_claims(user_id, last_claimed_at) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET last_claimed_at=?",
-               (uid, now.isoformat(), now.isoformat()))
-    db.commit()
-    
-    text = f"💡 <b>Эксклюзивная идея по заработку / тема:</b>\n\n📌 <b>{themes['title']}</b>\n\n{themes['body'] or 'Следите за обновлениями в канале!'}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ В меню", callback_data="main_menu")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]])
     await call.message.edit_text(text, reply_markup=kb)
     await call.answer()
 
+# --- ADMIN PANEL ---
 @dp.callback_query(F.data == "admin_panel")
 async def cb_admin_panel(call: CallbackQuery):
     if not is_admin(call.from_user.id):
@@ -258,7 +237,7 @@ async def cb_adm_stats(call: CallbackQuery):
         f"💳 Всего заявок: {orders}\n"
         f"⏳ Ожидают проверки: {pending}\n"
         f"💎 Активных подписок: {active}\n"
-        f"📚 Тем/идей в базе: {themes_count}"
+        f"📚 Тем в базе: {themes_count}"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад в админку", callback_data="admin_panel")]])
     await call.message.edit_text(text, reply_markup=kb)
@@ -284,32 +263,74 @@ async def cb_adm_orders(call: CallbackQuery):
 @dp.callback_query(F.data == "adm_add_theme")
 async def cb_adm_add_theme(call: CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id): return await call.answer("Нет доступа.", show_alert=True)
-    await state.set_state(AdminStates.waiting_for_theme)
+    await state.set_state(AdminStates.waiting_for_theme_title)
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_panel")]])
-    await call.message.edit_text("➕ <b>Добавление новой темы / идеи:</b>\n\nОтправьте текст темы следующим сообщением (первая строка — заголовок, далее описание):", reply_markup=kb)
+    await call.message.edit_text("➕ <b>Шаг 1 из 2:</b> Введите <b>название</b> новой темы или гайда:", reply_markup=kb)
     await call.answer()
 
-@dp.message(AdminStates.waiting_for_theme)
-async def process_add_theme(message: Message, state: FSMContext):
+@dp.message(AdminStates.waiting_for_theme_title)
+async def process_theme_title(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
-    text = message.text or ""
-    lines = text.split("\n", 1)
-    title = lines[0].strip()
-    body = lines[1].strip() if len(lines) > 1 else ""
+    temp_theme_data['title'] = message.text.strip()
+    await state.set_state(AdminStates.waiting_for_theme_body)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_panel")]])
+    await message.answer("➕ <b>Шаг 2 из 2:</b> Теперь отправьте <b>текст (содержимое)</b> этого гайда:", reply_markup=kb)
+
+@dp.message(AdminStates.waiting_for_theme_body)
+async def process_theme_body(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    title = temp_theme_data.get('title', 'Без названия')
+    body = message.text.strip()
     
     db.execute("INSERT INTO themes(title, body, created_at) VALUES(?,?,?)", (title, body, datetime.now().isoformat()))
     db.commit()
     await state.clear()
+    temp_theme_data.clear()
     
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛠 В админ-панель", callback_data="admin_panel")]])
-    await message.answer("✅ <b>Тема успешно добавлена в базу!</b>", reply_markup=kb)
+    await message.answer("✅ <b>Тема и гайд успешно добавлены в список!</b>", reply_markup=kb)
+
+@dp.callback_query(F.data == "adm_del_themes")
+async def cb_adm_del_themes(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return await call.answer("Нет доступа.", show_alert=True)
+    themes = db.execute("SELECT id, title FROM themes ORDER BY id ASC").fetchall()
+    if not themes:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_panel")]])
+        return await call.message.edit_text("📭 Тем для удаления нет.", reply_markup=kb)
+    
+    kb_list = []
+    for t in themes:
+        kb_list.append([InlineKeyboardButton(text=f"❌ Удалить: {t['title'][:25]}...", callback_data=f"del_theme:{t['id']}")])
+    kb_list.append([InlineKeyboardButton(text="⬅️ Назад в админку", callback_data="admin_panel")])
+    
+    await call.message.edit_text("🗑 <b>Управление темами:</b>\nНажмите на тему, чтобы мгновенно удалить её:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list))
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("del_theme:"))
+async def cb_do_del_theme(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return await call.answer("Нет доступа.", show_alert=True)
+    theme_id = int(call.data.split(":")[1])
+    db.execute("DELETE FROM themes WHERE id=?", (theme_id,))
+    db.commit()
+    await call.answer("Тема удалена!", show_alert=True)
+    # Обновим список
+    themes = db.execute("SELECT id, title FROM themes ORDER BY id ASC").fetchall()
+    if not themes:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_panel")]])
+        return await call.message.edit_text("📭 Тем больше не осталось.", reply_markup=kb)
+    
+    kb_list = []
+    for t in themes:
+        kb_list.append([InlineKeyboardButton(text=f"❌ Удалить: {t['title'][:25]}...", callback_data=f"del_theme:{t['id']}")])
+    kb_list.append([InlineKeyboardButton(text="⬅️ Назад в админку", callback_data="admin_panel")])
+    await call.message.edit_text("🗑 <b>Управление темами:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list))
 
 @dp.callback_query(F.data == "adm_set_price")
 async def cb_adm_set_price(call: CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id): return await call.answer("Нет доступа.", show_alert=True)
     await state.set_state(AdminStates.waiting_for_price)
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_panel")]])
-    await call.message.edit_text("💰 Введите новую стоимость подписки (число):", reply_markup=kb)
+    await call.message.edit_text("💰 Введите новую стоимость подписки (только число):", reply_markup=kb)
     await call.answer()
 
 @dp.message(AdminStates.waiting_for_price)
@@ -317,11 +338,11 @@ async def process_set_price(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
     val = message.text.strip()
     if not val.isdigit():
-        return await message.answer("⚠️ Введите число.")
+        return await message.answer("⚠️ Введите корректное число.")
     set_setting("price", val)
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛠 В админ-панель", callback_data="admin_panel")]])
-    await message.answer(f"✅ Цена изменена на <b>{val}₽</b>!", reply_markup=kb)
+    await message.answer(f"✅ Цена подписки изменена на <b>{val}₽</b>!", reply_markup=kb)
 
 @dp.callback_query(F.data == "adm_set_card")
 async def cb_adm_set_card(call: CallbackQuery, state: FSMContext):
@@ -365,29 +386,29 @@ async def process_broadcast(message: Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛠 В админ-панель", callback_data="admin_panel")]])
     await message.answer(f"✅ Рассылка завершена. Отправлено: {sent}/{len(users)}", reply_markup=kb)
 
-@dp.message(F.photo | F.document | F.text)
-async def handle_user_input(message: Message):
+# --- ORDERS & RECEIPTS ---
+@dp.message(F.photo | F.document)
+async def handle_receipt(message: Message):
     uid = message.from_user.id
     if is_admin(uid):
         return
         
-    if message.photo:
-        file_id = message.photo[-1].file_id
-        cursor = db.execute("INSERT INTO orders(user_id, status, receipt_type, receipt_file_id, created_at) VALUES(?,?,?,?,?)",
-                            (uid, "pending", "photo", file_id, datetime.now().isoformat()))
-        db.commit()
-        order_id = cursor.lastrowid
-        
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"approve:{order_id}"),
-             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{order_id}")]
-        ])
-        for admin in ADMIN_IDS:
-            try:
-                await bot.send_photo(admin, file_id, caption=f"🧾 <b>Чек на проверку #{order_id}</b>\nОт ID: <code>{uid}</code>", reply_markup=kb)
-            except Exception:
-                pass
-        await message.answer("✅ <b>Чек отправлен администратору!</b> Ожидайте подтверждения.")
+    file_id = message.photo[-1].file_id if message.photo else message.document.file_id
+    cursor = db.execute("INSERT INTO orders(user_id, status, receipt_type, receipt_file_id, created_at) VALUES(?,?,?,?,?)",
+                        (uid, "pending", "photo", file_id, datetime.now().isoformat()))
+    db.commit()
+    order_id = cursor.lastrowid
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"approve:{order_id}"),
+         InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{order_id}")]
+    ])
+    for admin in ADMIN_IDS:
+        try:
+            await bot.send_photo(admin, file_id, caption=f"🧾 <b>Чек на проверку #{order_id}</b>\nОт ID: <code>{uid}</code>", reply_markup=kb)
+        except Exception:
+            pass
+    await message.answer("✅ <b>Чек отправлен администратору!</b> Ожидайте подтверждения.")
 
 @dp.callback_query(F.data.startswith("approve:"))
 async def cb_approve_order(call: CallbackQuery):
@@ -425,7 +446,7 @@ async def cb_reject_order(call: CallbackQuery):
     db.commit()
     
     try:
-        await bot.send_message(order["user_id"], "❌ <b>К сожалению, ваш чек был отклонен.</b> Проверьте реквизиты или обратитесь в поддержку.")
+        await bot.send_message(order["user_id"], "❌ <b>К сожалению, ваш чек был отклонен.</b> Проверьте правильность перевода или обратитесь в поддержку.")
     except Exception:
         pass
         
@@ -436,7 +457,7 @@ async def cb_reject_order(call: CallbackQuery):
     await call.answer("Заявка отклонена.")
 
 async def main():
-    log.info("Starting updated PlayFunpay bot...")
+    log.info("Starting refined PlayFunpay bot with themes list...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
