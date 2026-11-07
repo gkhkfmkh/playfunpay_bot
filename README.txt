@@ -131,6 +131,7 @@ bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
 @dp.message(CommandStart())
+
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     uid = message.from_user.id
