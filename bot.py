@@ -75,8 +75,8 @@ def init_db():
         "price": "99",
         "card_number": "2200702075574801",
         "bank_name": "Т-Банк (Тинькофф)",
-        "channel_url": "https://t.me/telegram",
-        "ads_url": "https://t.me/telegram"
+        "channel_url": "https://t.me/playfunpay",
+        "ads_url": "https://t.me/playfunpay1"
     }
     for k, v in defaults.items():
         db.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)", (k, v))
